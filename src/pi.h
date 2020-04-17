@@ -42,6 +42,18 @@ enum class SafeResult : int {
 #endif
 #define PI_SAFECALL_API pi::SafeResult PI_SAFECALL_CALLTYPE
 
+// Wrappers to block exceptions from escaping c++ code
+#define PI_SAFECALL_WRAP_BEGIN try {
+#define PI_SAFECALL_WRAP_END } catch (...) { return pi::SafeResult::E_FAIL; }
+
+// Check args for nullptr and return. Compiler will clean this.
+#define PI_SAFECALL_CHECKARGS(...) {                        \
+    const void *ps[] = {__VA_ARGS__};                       \
+    for (int i = 0; i < sizeof(ps) / sizeof(void*); i++) {  \
+        if (!ps[i]) return pi::SafeResult::E_POINTER;       \
+    }                                                       \
+}
+
 // Binary GUID support and text interpreter
 typedef struct _GUID {
     unsigned int   Data1;
@@ -116,17 +128,17 @@ constexpr bool string_to_guid(char const* s, GUID& id)
 // ----------------------------------------------------------------------------
 
 #define PI_IUNKNOWN_IID "00000000-0000-0000-C000-000000000046"
-#define PI_IUNKNOWN_CALLTYPE SAFECALL_CALLTYPE
+#define PI_IUNKNOWN_CALLTYPE PI_SAFECALL_CALLTYPE
 
 // Define a static precompiled function to retrieve the guid of the interface.
 // In VC++ compatible compilers there exists __declspec(uuid("..."))
 #define PI_IUNKNOWN_INTERFACE_GUIDGETTER( __NAME, __GUID ) \
 protected: \
-    static constexpr pascal_interfaces::GUID __guid() { \
+    static constexpr pi::GUID __guid() { \
         /* Trick to allow static_assert on result */ \
-        constexpr auto id = []() -> std::pair<bool, pascal_interfaces::GUID> { \
-            pascal_interfaces::GUID id = {0,0,0,{0,0,0,0,0,0,0,0}}; \
-            return { string_to_guid( __GUID , id), id }; \
+        constexpr auto id = []() -> std::pair<bool, pi::GUID> { \
+            pi::GUID guid = {0,0,0,{0,0,0,0,0,0,0,0}}; \
+            return { string_to_guid( __GUID , guid), guid }; \
         } (); \
         static_assert(id.first, "GUID of Interface " #__NAME " is invalid: " #__GUID ); \
         return id.second; \
@@ -134,23 +146,24 @@ protected: \
 public:
 
 // TODO add ifdefs to use __declspec(uuid()) when available instead of static method
-#define PASCAL_INTERFACE( __NAME, __GUID ) \
-struct __NAME : public pascal_interfaces::IUnknownBase \
+#define PASCAL_INTERFACE_BEGIN( __NAME, __GUID ) \
+struct __NAME : public pi::IUnknownBase \
 { PI_IUNKNOWN_INTERFACE_GUIDGETTER( __NAME, __GUID )
+
+#define PASCAL_INTERFACE_END };
 
 // This would be the real IUnknown but proxying it solves ambiguity problems...
 struct IUnknownBase {
 public:
-    virtual SafeResult IUNKNOWN_CALLTYPE QueryInterface(GUID const* pguid, void** ppvObject) = 0;
+    virtual SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(GUID const* pguid, void** ppvObject) = 0;
 
-    virtual int IUNKNOWN_CALLTYPE AddRef() = 0;
+    virtual int PI_IUNKNOWN_CALLTYPE AddRef() = 0;
 
-    virtual int IUNKNOWN_CALLTYPE Release() = 0;
+    virtual int PI_IUNKNOWN_CALLTYPE Release() = 0;
 };
 
 // Proxy to the 'real' interface. It's convenient to add the guid with the macro here as well.
-PASCAL_INTERFACE(IUnknown, IUNKNOWN_IID)
-};
+PASCAL_INTERFACE_BEGIN(IUnknown, PI_IUNKNOWN_IID) PASCAL_INTERFACE_END
 
 // ----------------------------------------------------------------------------
 // Generic IUnknown interface implementation
@@ -164,7 +177,7 @@ public:
     virtual ~UnknownImpl() { }
 
 public:
-    SafeResult IUNKNOWN_CALLTYPE QueryInterface(const GUID* pguid, void** ppvObject) override {
+    SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(const GUID* pguid, void** ppvObject) override {
         if (!pguid || !ppvObject)
             return SafeResult::E_POINTER;
 
@@ -183,9 +196,9 @@ private:
     inline bool QueryInterfaceImpl(const GUID & guid, void*& pvObject) {
         constexpr GUID g = I1::__guid();
         if (guid == g) {
-            AddRef();
             // by definition we know I1 is implemented so we can do a fast static_cast
             pvObject = static_cast<I1*>(this);
+            AddRef();
 
             return true;
         }
@@ -238,7 +251,7 @@ public:
             });
     }
 
-    int IUNKNOWN_CALLTYPE AddRef() override {
+    int PI_IUNKNOWN_CALLTYPE AddRef() override {
         std::scoped_lock guard(refMutex);
 
         assertAddReference(guard);
@@ -246,7 +259,7 @@ public:
         return ++refCountCom;
     }
 
-    int IUNKNOWN_CALLTYPE Release() override {
+    int PI_IUNKNOWN_CALLTYPE Release() override {
         auto* guard = new std::scoped_lock(refMutex);
 
         assert(refStarted);
