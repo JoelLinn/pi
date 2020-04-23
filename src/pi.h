@@ -27,12 +27,12 @@ namespace pi {
 #endif
 
 // Return codes for COM safe calls - related to HRESULT
-enum class SafeResult : int {
-  S_OK = int(0x00000000),
-  E_NOTIMPL = int(0x80004001),
-  E_NOINTERFACE = int(0x80004002),
-  E_POINTER = int(0x80004003),
-  E_FAIL = int(0x80004005)
+enum class SafeResult : uint32_t {
+  S_OK = 0x00000000,
+  E_NOTIMPL = 0x80004001,
+  E_NOINTERFACE = 0x80004002,
+  E_POINTER = 0x80004003,
+  E_FAIL = 0x80004005
 };
 
 #ifdef _WIN32
