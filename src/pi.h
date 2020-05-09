@@ -134,6 +134,15 @@ constexpr bool string_to_guid(char const* s, GUID& id) {
   return true;
 }
 
+// Non terminated fixed allocated string type.
+struct ShortString {
+  uint8_t len;
+  char str[std::numeric_limits<typeof(len)>::max()];
+
+  static const size_t MAX_LENGTH = sizeof(str);
+};
+static_assert(sizeof(ShortString) == 256);
+
 // ----------------------------------------------------------------------------
 // IUnknown interface description
 // ----------------------------------------------------------------------------
