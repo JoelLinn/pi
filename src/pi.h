@@ -28,11 +28,11 @@ namespace pi {
 
 // Return codes for COM safe calls - related to HRESULT
 enum class SafeResult : uint32_t {
-  S_OK = 0x00000000,
-  E_NOTIMPL = 0x80004001,
-  E_NOINTERFACE = 0x80004002,
-  E_POINTER = 0x80004003,
-  E_FAIL = 0x80004005
+  OK = 0x00000000,
+  ENOTIMPL = 0x80004001,
+  ENOINTERFACE = 0x80004002,
+  EPOINTER = 0x80004003,
+  EFAIL = 0x80004005
 };
 
 #ifdef _WIN32
@@ -47,7 +47,7 @@ enum class SafeResult : uint32_t {
 #define PI_SAFECALL_WRAP_END                                                   \
   }                                                                            \
   catch (...) {                                                                \
-    return pi::SafeResult::E_FAIL;                                             \
+    return pi::SafeResult::EFAIL;                                             \
   }
 
 // Check args for nullptr and return. Compiler will clean this.
@@ -56,7 +56,7 @@ enum class SafeResult : uint32_t {
     const void* ps[] = {__VA_ARGS__};                                          \
     for (int i = 0; i < sizeof(ps) / sizeof(void*); i++)                       \
       if (!ps[i])                                                              \
-        return pi::SafeResult::E_POINTER;                                      \
+        return pi::SafeResult::EPOINTER;                                      \
   }
 
 // Binary GUID support and text interpreter
@@ -207,13 +207,13 @@ public:
   SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(const GUID* pguid,
                                                  void** ppvObject) override {
     if (!pguid || !ppvObject)
-      return SafeResult::E_POINTER;
+      return SafeResult::EPOINTER;
 
     // check for all implemented interfaces with recursive function
     if (QueryInterfaceImpl<IUnknown, Interfaces...>(*pguid, *ppvObject))
-      return SafeResult::S_OK;
+      return SafeResult::OK;
     else
-      return SafeResult::E_NOINTERFACE;
+      return SafeResult::ENOINTERFACE;
   }
 
 private:
