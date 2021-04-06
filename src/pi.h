@@ -3,8 +3,12 @@
 
 #include <cassert>
 #include <cstring>
+#include <exception>
+#include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace pi {
@@ -42,13 +46,23 @@ enum class SafeResult : uint32_t {
 #endif
 #define PI_SAFECALL_API pi::SafeResult PI_SAFECALL_CALLTYPE
 
-// Wrappers to block exceptions from escaping c++ code
-#define PI_SAFECALL_WRAP_BEGIN try {
-#define PI_SAFECALL_WRAP_END                                                   \
-  }                                                                            \
-  catch (...) {                                                                \
-    return pi::SafeResult::EFAIL;                                             \
+// Wrapper to block exceptions from escaping c++ code
+pi::SafeResult wrap_exceptions(std::function<pi::SafeResult()> f) {
+  try {
+    return f();
+  } catch (...) {
+    std::cerr << "PI: uncaught C++ exception: ";
+    try {
+      throw;
+    } catch (const std::exception& e) {
+      std::cerr << e.what();
+    } catch (...) {
+      std::cerr << "UNKNWON";
+    }
+    std::cerr << std::endl;
+    return pi::SafeResult::EFAIL;
   }
+}
 
 // Check args for nullptr and return. Compiler will clean this.
 #define PI_SAFECALL_CHECKARGS(...)                                             \
@@ -56,7 +70,7 @@ enum class SafeResult : uint32_t {
     const void* ps[] = {__VA_ARGS__};                                          \
     for (int i = 0; i < sizeof(ps) / sizeof(void*); i++)                       \
       if (!ps[i])                                                              \
-        return pi::SafeResult::EPOINTER;                                      \
+        return pi::SafeResult::EPOINTER;                                       \
   }
 
 // Binary GUID support and text interpreter
@@ -72,7 +86,7 @@ inline bool operator==(_GUID const& a, _GUID const& b) {
 }
 
 // ascii table until 'f'
-static unsigned char constexpr hex2bin[] = {
+unsigned char constexpr hex2bin[] = {
     99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, /* 0x00 */
     99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, /* 0x10 */
     99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, /* 0x20 */
@@ -82,9 +96,10 @@ static unsigned char constexpr hex2bin[] = {
     99, 10, 11, 12, 13, 14, 15                                      /* 0x60 */
 };
 
-constexpr bool string_to_guid(char const* s, GUID& id) {
+constexpr std::optional<GUID> string_to_guid(char const* s) {
   /* XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX */
 
+  GUID id = {};
   for (int i = 0; i < 37; ++i) {
     // we implicitly check string length here.
     // everything except the end should be non zero - the desired end should be
@@ -96,21 +111,21 @@ constexpr bool string_to_guid(char const* s, GUID& id) {
     case 18:
     case 23:
       if (s[i] != '-')
-        return false;
+        return std::nullopt;
       break;
       // check end of string
     case 36:
       if (s[i] != 0)
-        return false; // string is to long
+        return std::nullopt; // string is to long
       break;
       // check hex characters (including premature string termination)
     default:
       // table is only that long
       if (s[i] > 'f')
-        return false;
+        return std::nullopt;
       // if the value is greater, the char was illegal
       if (hex2bin[s[i]] > 15)
-        return false;
+        return std::nullopt;
       break;
     }
   }
@@ -131,7 +146,7 @@ constexpr bool string_to_guid(char const* s, GUID& id) {
   id.Data4[5] = hex2bin[s[30]] << 4 | hex2bin[s[31]];
   id.Data4[6] = hex2bin[s[32]] << 4 | hex2bin[s[33]];
   id.Data4[7] = hex2bin[s[34]] << 4 | hex2bin[s[35]];
-  return true;
+  return id;
 }
 
 // Non terminated fixed allocated string type.
@@ -147,34 +162,10 @@ static_assert(sizeof(ShortString) == 256);
 // IUnknown interface description
 // ----------------------------------------------------------------------------
 
-#define PI_IUNKNOWN_IID "00000000-0000-0000-C000-000000000046"
 #define PI_IUNKNOWN_CALLTYPE PI_SAFECALL_CALLTYPE
-
-// Define a static precompiled function to retrieve the guid of the interface.
-// In VC++ compatible compilers there exists __declspec(uuid("..."))
-#define PI_IUNKNOWN_INTERFACE_GUIDGETTER(__NAME, __GUID)                       \
-protected:                                                                     \
-  static constexpr pi::GUID __guid() {                                         \
-    /* Trick to allow static_assert on result */                               \
-    constexpr auto id = []() -> std::pair<bool, pi::GUID> {                    \
-      pi::GUID guid = {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}};                     \
-      return {string_to_guid(__GUID, guid), guid};                             \
-    }();                                                                       \
-    static_assert(id.first,                                                    \
-                  "GUID of Interface " #__NAME " is invalid: " #__GUID);       \
-    return id.second;                                                          \
-  };                                                                           \
-                                                                               \
-public:
-
-// TODO add ifdefs to use __declspec(uuid()) when available instead
-#define PASCAL_INTERFACE_BEGIN(__NAME, __GUID)                                 \
-  struct __NAME : public pi::IUnknownBase {                                    \
-    PI_IUNKNOWN_INTERFACE_GUIDGETTER(__NAME, __GUID)
-
-#define PASCAL_INTERFACE_END                                                   \
-  }                                                                            \
-  ;
+struct IUnknown_IID {
+  static constexpr char guid[] = "00000000-0000-0000-C000-000000000046";
+};
 
 // This would be the real IUnknown but proxying it solves ambiguity problems...
 struct IUnknownBase {
@@ -187,10 +178,19 @@ public:
   virtual int PI_IUNKNOWN_CALLTYPE Release() = 0;
 };
 
-// Proxy to the 'real' interface. It's convenient to add the guid with the macro
-// here as well.
-PASCAL_INTERFACE_BEGIN(IUnknown, PI_IUNKNOWN_IID)
-PASCAL_INTERFACE_END
+template <typename IID> struct PascalInterface : public IUnknownBase {
+protected:
+  // Define a static constexpr function to retrieve the guid of the interface.
+  // In VC++ compatible compilers there exists __declspec(uuid("..."))
+  static constexpr pi::GUID __guid() {
+    constexpr auto id = string_to_guid(IID::guid);
+    static_assert(id, "GUID is invalid");
+    return id.value();
+  };
+};
+
+// Proxy to the 'real' interface. It's convenient to add the guid here as well.
+struct IUnknown : PascalInterface<IUnknown_IID> {};
 
 // ----------------------------------------------------------------------------
 // Generic IUnknown interface implementation
@@ -217,24 +217,20 @@ public:
   }
 
 private:
-  // This template function expands recursively and checks one interface at a
-  // time It unwraps the type list one by one A default 'I1 = IUnknown' is
-  // necessary because the compiler thinks we eventually would call with an
-  // empty list
-  template <typename I1 = IUnknown, typename... IRest>
+  // This template function expands recursively and checks all implemented
+  // interfaces
+  template <typename I1, typename... IRest>
   inline bool QueryInterfaceImpl(const GUID& guid, void*& pvObject) {
     constexpr GUID g = I1::__guid();
     if (guid == g) {
       // by definition we know I1 is implemented so we can do a fast static_cast
       pvObject = static_cast<I1*>(this);
       AddRef();
-
       return true;
     }
 
-    if (sizeof...(IRest)) {
-      // although this is never called with zero IRests this template function
-      // needs to allow for zero types
+    if constexpr (sizeof...(IRest)) {
+      // search next
       return QueryInterfaceImpl<IRest...>(guid, pvObject);
     } else {
       return false;
@@ -271,14 +267,13 @@ public:
       // we can static_cast here since the dynamic_cast during creation must
       // have succeeded
       auto* uImpl = static_cast<UnknownImpl*>(obj);
-      auto* guard = new std::scoped_lock(uImpl->refMutex);
+      auto guard =
+          std::make_unique<std::scoped_lock<std::mutex>>(uImpl->refMutex);
 
       assert(uImpl->refStarted);
       assert(uImpl->refCountSharedPtr > 0);
       if (!--(uImpl->refCountSharedPtr))
         uImpl->TryDelete(guard);
-      if (guard)
-        delete guard;
     });
   }
 
@@ -291,7 +286,7 @@ public:
   }
 
   int PI_IUNKNOWN_CALLTYPE Release() override {
-    auto* guard = new std::scoped_lock(refMutex);
+    auto guard = std::make_unique<std::scoped_lock<std::mutex>>(refMutex);
 
     assert(refStarted);
     assert(refCountCom > 0);
@@ -299,25 +294,20 @@ public:
       // if there are no references in c++ code by shared_ptr this will be equal
       // to 'delete this'
       TryDelete(guard);
-      if (guard)
-        delete guard;
       // The moment we delete the instance we can NOT reference the member
       // variable 'refCount'!!!! Thus we hard code the return value.
       return 0;
     }
-    delete guard;
     return refCountCom;
   }
 
 private:
   // Called when one reference counting mechanism sees no more references
-  inline void TryDelete(std::scoped_lock<std::mutex>*& guard) {
+  inline void TryDelete(std::unique_ptr<std::scoped_lock<std::mutex>>& guard) {
     if (!refCountCom && !refCountSharedPtr) {
       // reference count has been verified to be zero,
       // mutex is not valid after call to delete; destruct guard now!
-      delete guard;
-      // TryDelete only -may- destruct the guard, inform the caller via nullptr:
-      guard = nullptr;
+      guard.reset();
       delete this;
     }
   }
