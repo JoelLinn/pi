@@ -73,16 +73,29 @@ pi::SafeResult wrap_exceptions(std::function<pi::SafeResult()> f) {
         return pi::SafeResult::EPOINTER;                                       \
   }
 
-// Binary GUID support and text interpreter
-typedef struct _GUID {
-  unsigned int Data1;
-  unsigned short Data2;
-  unsigned short Data3;
-  unsigned char Data4[8];
-} GUID;
+// Non terminated fixed allocated string type.
+struct ShortString {
+  uint8_t len;
+  char str[std::numeric_limits<typeof(len)>::max()];
 
-inline bool operator==(_GUID const& a, _GUID const& b) {
-  return !memcmp(&a, &b, sizeof(_GUID));
+  static const size_t MAX_LENGTH = sizeof(str);
+};
+static_assert(sizeof(ShortString) == 256);
+
+// ----------------------------------------------------------------------------
+// GUID and IID
+// ----------------------------------------------------------------------------
+
+// Binary GUID support and text interpreter
+struct guid_t {
+  uint32_t data1;
+  uint16_t data2;
+  uint16_t data3;
+  uint8_t data4[8];
+};
+
+inline bool operator==(guid_t const& a, guid_t const& b) {
+  return !memcmp(&a, &b, sizeof(guid_t));
 }
 
 // ascii table until 'f'
@@ -96,10 +109,10 @@ unsigned char constexpr hex2bin[] = {
     99, 10, 11, 12, 13, 14, 15                                      /* 0x60 */
 };
 
-constexpr std::optional<GUID> string_to_guid(char const* s) {
+constexpr std::optional<guid_t> string_to_guid(const char* s) {
   /* XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX */
 
-  GUID id = {};
+  guid_t id = {};
   for (int i = 0; i < 37; ++i) {
     // we implicitly check string length here.
     // everything except the end should be non zero - the desired end should be
@@ -113,13 +126,13 @@ constexpr std::optional<GUID> string_to_guid(char const* s) {
       if (s[i] != '-')
         return std::nullopt;
       break;
-      // check end of string
     case 36:
+      // check end of string
       if (s[i] != 0)
         return std::nullopt; // string is to long
       break;
-      // check hex characters (including premature string termination)
     default:
+      // check hex characters (including premature string termination)
       // table is only that long
       if (s[i] > 'f')
         return std::nullopt;
@@ -130,47 +143,48 @@ constexpr std::optional<GUID> string_to_guid(char const* s) {
     }
   }
 
-  id.Data1 = (hex2bin[s[0]] << 28 | hex2bin[s[1]] << 24 | hex2bin[s[2]] << 20 |
+  id.data1 = (hex2bin[s[0]] << 28 | hex2bin[s[1]] << 24 | hex2bin[s[2]] << 20 |
               hex2bin[s[3]] << 16 | hex2bin[s[4]] << 12 | hex2bin[s[5]] << 8 |
               hex2bin[s[6]] << 4 | hex2bin[s[7]]);
-  id.Data2 = hex2bin[s[9]] << 12 | hex2bin[s[10]] << 8 | hex2bin[s[11]] << 4 |
+  id.data2 = hex2bin[s[9]] << 12 | hex2bin[s[10]] << 8 | hex2bin[s[11]] << 4 |
              hex2bin[s[12]];
-  id.Data3 = hex2bin[s[14]] << 12 | hex2bin[s[15]] << 8 | hex2bin[s[16]] << 4 |
+  id.data3 = hex2bin[s[14]] << 12 | hex2bin[s[15]] << 8 | hex2bin[s[16]] << 4 |
              hex2bin[s[17]];
 
-  id.Data4[0] = hex2bin[s[19]] << 4 | hex2bin[s[20]];
-  id.Data4[1] = hex2bin[s[21]] << 4 | hex2bin[s[22]];
-  id.Data4[2] = hex2bin[s[24]] << 4 | hex2bin[s[25]];
-  id.Data4[3] = hex2bin[s[26]] << 4 | hex2bin[s[27]];
-  id.Data4[4] = hex2bin[s[28]] << 4 | hex2bin[s[29]];
-  id.Data4[5] = hex2bin[s[30]] << 4 | hex2bin[s[31]];
-  id.Data4[6] = hex2bin[s[32]] << 4 | hex2bin[s[33]];
-  id.Data4[7] = hex2bin[s[34]] << 4 | hex2bin[s[35]];
+  id.data4[0] = hex2bin[s[19]] << 4 | hex2bin[s[20]];
+  id.data4[1] = hex2bin[s[21]] << 4 | hex2bin[s[22]];
+  id.data4[2] = hex2bin[s[24]] << 4 | hex2bin[s[25]];
+  id.data4[3] = hex2bin[s[26]] << 4 | hex2bin[s[27]];
+  id.data4[4] = hex2bin[s[28]] << 4 | hex2bin[s[29]];
+  id.data4[5] = hex2bin[s[30]] << 4 | hex2bin[s[31]];
+  id.data4[6] = hex2bin[s[32]] << 4 | hex2bin[s[33]];
+  id.data4[7] = hex2bin[s[34]] << 4 | hex2bin[s[35]];
   return id;
 }
 
-// Non terminated fixed allocated string type.
-struct ShortString {
-  uint8_t len;
-  char str[std::numeric_limits<typeof(len)>::max()];
+struct iid_literal_t {
+  constexpr iid_literal_t(const char* s) {
+    auto id = string_to_guid(s);
+    try {
+      value = id.value();
+    } catch (const std::bad_optional_access&) {
+      throw std::runtime_error("GUID is invalid");
+    }
+  }
 
-  static const size_t MAX_LENGTH = sizeof(str);
+  guid_t value;
 };
-static_assert(sizeof(ShortString) == 256);
 
 // ----------------------------------------------------------------------------
 // IUnknown interface description
 // ----------------------------------------------------------------------------
 
 #define PI_IUNKNOWN_CALLTYPE PI_SAFECALL_CALLTYPE
-struct IUnknown_IID {
-  static constexpr char guid[] = "00000000-0000-0000-C000-000000000046";
-};
 
 // This would be the real IUnknown but proxying it solves ambiguity problems...
 struct IUnknownBase {
 public:
-  virtual SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(GUID const* pguid,
+  virtual SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(guid_t const* pguid,
                                                          void** ppvObject) = 0;
 
   virtual int PI_IUNKNOWN_CALLTYPE AddRef() = 0;
@@ -178,19 +192,15 @@ public:
   virtual int PI_IUNKNOWN_CALLTYPE Release() = 0;
 };
 
-template <typename IID> struct PascalInterface : public IUnknownBase {
+template <iid_literal_t IID> struct PascalInterface : public IUnknownBase {
 protected:
   // Define a static constexpr function to retrieve the guid of the interface.
   // In VC++ compatible compilers there exists __declspec(uuid("..."))
-  static constexpr pi::GUID __guid() {
-    constexpr auto id = string_to_guid(IID::guid);
-    static_assert(id, "GUID is invalid");
-    return id.value();
-  };
+  static constexpr pi::guid_t __guid() { return IID.value; };
 };
 
 // Proxy to the 'real' interface. It's convenient to add the guid here as well.
-struct IUnknown : PascalInterface<IUnknown_IID> {};
+struct IUnknown : PascalInterface<"00000000-0000-0000-C000-000000000046"> {};
 
 // ----------------------------------------------------------------------------
 // Generic IUnknown interface implementation
@@ -204,7 +214,7 @@ public:
   virtual ~UnknownImpl() {}
 
 public:
-  SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(const GUID* pguid,
+  SafeResult PI_IUNKNOWN_CALLTYPE QueryInterface(const guid_t* pguid,
                                                  void** ppvObject) override {
     if (!pguid || !ppvObject)
       return SafeResult::EPOINTER;
@@ -220,8 +230,8 @@ private:
   // This template function expands recursively and checks all implemented
   // interfaces
   template <typename I1, typename... IRest>
-  inline bool QueryInterfaceImpl(const GUID& guid, void*& pvObject) {
-    constexpr GUID g = I1::__guid();
+  inline bool QueryInterfaceImpl(const guid_t& guid, void*& pvObject) {
+    constexpr guid_t g = I1::__guid();
     if (guid == g) {
       // by definition we know I1 is implemented so we can do a fast static_cast
       pvObject = static_cast<I1*>(this);
